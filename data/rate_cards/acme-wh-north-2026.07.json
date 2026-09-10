@@ -1,0 +1,76 @@
+{
+  "card_id": "BUY-ACME-WHNORTH",
+  "version": "2026.07",
+  "warehouse_id": "WH-NORTH",
+  "client_id": "ACME",
+  "effective_from": "2026-07-01",
+  "effective_to": null,
+  "entries": {
+    "receiving.per_pallet": {
+      "label": "Receiving",
+      "uom": "pallet",
+      "kind": "per_unit",
+      "rate": "6.00",
+      "aliases": [
+        "Receiving per pallet",
+        "Inbound receiving",
+        "Receipt per pallet"
+      ]
+    },
+    "storage.per_pallet_month": {
+      "label": "Storage",
+      "uom": "pallet_month",
+      "kind": "per_unit",
+      "rate": "18.00",
+      "aliases": [
+        "Storage per pallet/mo",
+        "Pallet storage",
+        "Storage per pallet per month"
+      ]
+    },
+    "pickpack.per_order": {
+      "label": "Pick and pack",
+      "uom": "order",
+      "kind": "per_unit",
+      "rate": "2.50",
+      "aliases": [
+        "Pick and pack per order",
+        "Pick/pack per order",
+        "Order fulfilment"
+      ]
+    },
+    "pick.per_extra_unit": {
+      "label": "Pick, extra unit",
+      "uom": "unit",
+      "kind": "per_unit",
+      "rate": "0.30",
+      "aliases": [
+        "Pick per extra unit",
+        "Additional pick unit",
+        "Extra unit pick"
+      ]
+    },
+    "parcel.passthrough": {
+      "label": "Parcel and shipping",
+      "uom": "shipment",
+      "kind": "percent_of_base",
+      "percent": "0",
+      "aliases": [
+        "Parcel shipping carrier cost",
+        "Carrier cost pass-through",
+        "Parcel carrier cost"
+      ]
+    },
+    "freight.b2b_per_pallet_out": {
+      "label": "B2B freight",
+      "uom": "pallet",
+      "kind": "per_unit",
+      "rate": "28.00",
+      "aliases": [
+        "B2B freight per pallet out",
+        "Outbound freight per pallet",
+        "B2B pallet out"
+      ]
+    }
+  }
+}

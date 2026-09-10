@@ -1,0 +1,11 @@
+warehouse_id,client_id,period_start,period_end,rate_key,count
+WH-NORTH,ACME,2026-07-01,2026-07-31,receiving.per_pallet,40
+WH-NORTH,ACME,2026-07-01,2026-07-31,storage.per_pallet_month,120
+WH-NORTH,ACME,2026-07-01,2026-07-31,pickpack.per_order,3200
+WH-NORTH,ACME,2026-07-01,2026-07-31,pick.per_extra_unit,5400
+WH-NORTH,ACME,2026-07-01,2026-07-31,freight.b2b_per_pallet_out,22
+WH-NORTH,ACME,2026-08-01,2026-08-31,receiving.per_pallet,40
+WH-NORTH,ACME,2026-08-01,2026-08-31,storage.per_pallet_month,120
+WH-NORTH,ACME,2026-08-01,2026-08-31,pickpack.per_order,3050
+WH-NORTH,ACME,2026-08-01,2026-08-31,pick.per_extra_unit,5400
+WH-NORTH,ACME,2026-08-01,2026-08-31,freight.b2b_per_pallet_out,22

@@ -1,0 +1,23 @@
+# The same month with seeded errors, one per flag. Expected findings:
+#   line 1  RATE_DRIFT            storage at 20.00, card says 18.00
+#   line 2  QTY_VARIANCE          3,200 orders billed, WMS shows 3,050
+#   line 3  WRONG_CLIENT_RATES    0.42/unit is BETA's rate at this warehouse
+#   line 4  SURCHARGE_BASE_WRONG  9,975 billed on a 9,500 base, card is 0%
+#   line 5  MATH_ERROR            22 x 28.00 is 616.00, extended as 644.00
+#   line 6  UNKNOWN               no card anywhere prices a destuff fee
+#   (absent) MISSING_LINE         WMS shows 40 pallets received, never billed
+# invoice_no: INV-4482
+# warehouse_id: WH-NORTH
+# client_id: ACME
+# invoice_date: 2026-09-04
+# period_start: 2026-08-01
+# period_end: 2026-08-31
+# currency: USD
+# stated_total: 23737.00
+line_no,description,quantity,uom,unit_rate,amount,base_amount,source_page
+1,Storage · per pallet/mo,120,pallet/mo,20.00,2400.00,,1
+2,Pick & pack · per order,3200,order,2.50,8000.00,,1
+3,Pick · per extra unit,5400,unit,0.42,2268.00,,1
+4,Parcel/shipping · carrier cost,1,shipment,,9975.00,9500.00,2
+5,B2B freight · per pallet out,22,pallet,28.00,644.00,,2
+6,Container destuff fee,1,,,450.00,,2

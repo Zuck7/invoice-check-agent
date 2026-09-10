@@ -1,0 +1,45 @@
+{
+  "card_id": "BUY-BETA-WHNORTH",
+  "version": "2026.07",
+  "warehouse_id": "WH-NORTH",
+  "client_id": "BETA",
+  "effective_from": "2026-07-01",
+  "effective_to": null,
+  "entries": {
+    "receiving.per_pallet": {
+      "label": "Receiving",
+      "uom": "pallet",
+      "kind": "per_unit",
+      "rate": "6.50",
+      "aliases": ["Receiving per pallet"]
+    },
+    "storage.per_pallet_month": {
+      "label": "Storage",
+      "uom": "pallet_month",
+      "kind": "per_unit",
+      "rate": "19.50",
+      "aliases": ["Storage per pallet/mo"]
+    },
+    "pickpack.per_order": {
+      "label": "Pick and pack",
+      "uom": "order",
+      "kind": "per_unit",
+      "rate": "2.75",
+      "aliases": ["Pick and pack per order"]
+    },
+    "pick.per_extra_unit": {
+      "label": "Pick, extra unit",
+      "uom": "unit",
+      "kind": "per_unit",
+      "rate": "0.42",
+      "aliases": ["Pick per extra unit"]
+    },
+    "freight.b2b_per_pallet_out": {
+      "label": "B2B freight",
+      "uom": "pallet",
+      "kind": "per_unit",
+      "rate": "31.00",
+      "aliases": ["B2B freight per pallet out"]
+    }
+  }
+}
