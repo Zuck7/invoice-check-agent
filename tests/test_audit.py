@@ -23,15 +23,26 @@ from invoice_audit import (
     read_invoice,
 )
 from invoice_audit.checks import normalise_uom
+from invoice_audit.credits import CsvCreditLog
+from invoice_audit.snapshots import CsvSnapshots
 from invoice_audit.flags import FLAGS, Severity
 from invoice_audit.intake import IntakeError
 from invoice_audit.models import Flag, InvoiceLine
 from invoice_audit.money import money, quantity
-from invoice_audit.normalize import Normalizer, Suggestion, canonical
+from invoice_audit.normalize import (
+    MAX_RETRIES,
+    FuzzyMapper,
+    Normalizer,
+    Suggestion,
+    canonical,
+    refinements,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 CARDS = ROOT / "data" / "rate_cards"
 WMS = ROOT / "data" / "wms" / "counts.csv"
+CREDITS = ROOT / "data" / "credits" / "log.csv"
+SNAPSHOTS = ROOT / "data" / "snapshots" / "pallets.csv"
 INVOICES = ROOT / "data" / "invoices"
 
 
@@ -39,6 +50,8 @@ def build_engine(**kw) -> AuditEngine:
     defaults = dict(
         store=RateCardStore.from_dir(CARDS),
         order_data=CsvOrderData.from_file(WMS),
+        credit_log=CsvCreditLog.from_file(CREDITS),
+        snapshots=CsvSnapshots.from_file(SNAPSHOTS),
         history=HistoryStore(),
     )
     defaults.update(kw)
@@ -122,9 +135,11 @@ class SeededErrorTests(unittest.TestCase):
             flag_ids(self.result),
             [
                 "MATH_ERROR",
+                "MISSING_CREDIT",
                 "MISSING_LINE",
                 "QTY_VARIANCE",
                 "RATE_DRIFT",
+                "STORAGE_AGING_ERROR",
                 "SURCHARGE_BASE_WRONG",
                 "UNKNOWN",
                 "WRONG_CLIENT_RATES",
@@ -180,15 +195,15 @@ class SeededErrorTests(unittest.TestCase):
         self.assertEqual(flag.evidence["rate_key"], "receiving.per_pallet")
 
     def test_net_exposure(self):
-        # 240 + 375 + 648 + 475 + 28 + 450 - 240
-        self.assertEqual(self.result.exposure, Decimal("1976.00"))
+        # 240 + 375 + 648 + 475 + 28 + 450 + 27 + 310 - 240
+        self.assertEqual(self.result.exposure, Decimal("2313.00"))
 
     def test_every_flag_carries_provenance(self):
         for flag in self.result.flags:
             with self.subTest(flag=flag.flag_id):
                 self.assertTrue(flag.message)
                 self.assertIn(flag.flag_id, FLAGS)
-                if flag.flag_id != "MISSING_LINE":
+                if flag.flag_id not in {"MISSING_LINE", "MISSING_CREDIT"}:
                     self.assertIsNotNone(flag.rate_card_version)
 
 
@@ -355,7 +370,7 @@ class NormalizerTests(unittest.TestCase):
 
     def test_confident_model_suggestion_is_accepted(self):
         class Mapper:
-            def suggest(self, description, candidates):
+            def suggest(self, description, candidates, attempt=0):
                 return Suggestion("receiving.per_pallet", Decimal("0.95"), "shape")
 
         line = self._map("Goods in, per skid", mapper=Mapper())
@@ -364,22 +379,65 @@ class NormalizerTests(unittest.TestCase):
 
     def test_low_confidence_suggestion_is_rejected_not_priced(self):
         class Mapper:
-            def suggest(self, description, candidates):
+            def suggest(self, description, candidates, attempt=0):
                 return Suggestion("receiving.per_pallet", Decimal("0.40"), "guess")
 
         line = self._map("Goods in, per skid", mapper=Mapper())
         self.assertIsNone(line.rate_key)
         self.assertEqual(line.mapped_by, "model-rejected")
 
-    def test_rejected_suggestion_produces_both_flags(self):
+    def test_near_miss_produces_both_flags(self):
+        """Scored in the plausible band: worth telling a reviewer we were close."""
+
         class Mapper:
-            def suggest(self, description, candidates):
-                return Suggestion("receiving.per_pallet", Decimal("0.40"), "guess")
+            def suggest(self, description, candidates, attempt=0):
+                return Suggestion("receiving.per_pallet", Decimal("0.70"), "close")
 
         engine = build_engine(mapper=Mapper())
         result = engine.audit_path(INVOICES / "INV-4482.csv")
         self.assertIn("LOW_CONFIDENCE_EXTRACTION", flag_ids(result))
         self.assertIn("UNKNOWN", flag_ids(result))
+
+    def test_hopeless_score_is_unknown_without_the_noise(self):
+        """Below the floor there was no near miss, so do not claim one."""
+
+        class Mapper:
+            def suggest(self, description, candidates, attempt=0):
+                return Suggestion("receiving.per_pallet", Decimal("0.10"), "nothing")
+
+        engine = build_engine(mapper=Mapper())
+        result = engine.audit_path(INVOICES / "INV-4482.csv")
+        self.assertNotIn("LOW_CONFIDENCE_EXTRACTION", flag_ids(result))
+        self.assertIn("UNKNOWN", flag_ids(result))
+
+    def test_retry_ladder_rescues_a_noisy_description(self):
+        """Attempt 0 scores too low; stripping the month gets it over the line."""
+        line = self._map("Storage charges - pallet/month (Aug 2026)", mapper=FuzzyMapper())
+        self.assertEqual(line.rate_key, "storage.per_pallet_month")
+        self.assertEqual(line.mapped_by, "model:retry1")
+
+    def test_alias_containment_is_tried_before_the_mapper(self):
+        """The free exact path wins; the mapper is never consulted for this."""
+
+        class Explode:
+            def suggest(self, description, candidates, attempt=0):
+                raise AssertionError("mapper should not have been called")
+
+        line = self._map("Pick and pack, per order — August", mapper=Explode())
+        self.assertEqual(line.rate_key, "pickpack.per_order")
+        self.assertEqual(line.mapped_by, "alias")
+
+    def test_retry_budget_is_bounded(self):
+        calls = []
+
+        class Counting:
+            def suggest(self, description, candidates, attempt=0):
+                calls.append(attempt)
+                return Suggestion("receiving.per_pallet", Decimal("0.10"), "no")
+
+        self._map("Container destuff fee 12/08/2026 ref 99", mapper=Counting())
+        self.assertLessEqual(len(calls), MAX_RETRIES + 1)
+        self.assertEqual(calls, sorted(calls))
 
 
 class TaxonomyTests(unittest.TestCase):
@@ -407,10 +465,28 @@ class IntakeTests(unittest.TestCase):
                 read_invoice(path)
             self.assertIn("missing metadata", str(ctx.exception))
 
-    def test_pdf_is_deferred_to_phase_two(self):
-        with self.assertRaises(IntakeError) as ctx:
-            read_invoice(Path("nowhere/invoice.pdf"))
-        self.assertIn("phase 2", str(ctx.exception))
+    def test_pdf_routes_to_the_router_not_straight_to_vision(self):
+        from invoice_audit.intake import DEFAULT_EXTRACTORS, PdfRouter
+
+        chosen = [e for e in DEFAULT_EXTRACTORS if e.supports(Path("scan.pdf"))]
+        self.assertEqual(len(chosen), 1)
+        self.assertIsInstance(chosen[0], PdfRouter)
+
+    def test_images_route_to_vision(self):
+        from invoice_audit.intake import DEFAULT_EXTRACTORS, LazyVisionExtractor
+
+        chosen = [e for e in DEFAULT_EXTRACTORS if e.supports(Path("photo.jpg"))]
+        self.assertEqual(len(chosen), 1)
+        self.assertIsInstance(chosen[0], LazyVisionExtractor)
+
+    def test_csv_never_routes_to_vision(self):
+        from invoice_audit.intake import CsvExtractor, DEFAULT_EXTRACTORS
+
+        chosen = [
+            e for e in DEFAULT_EXTRACTORS if e.supports(Path("invoice.csv"))
+        ]
+        self.assertEqual(len(chosen), 1)
+        self.assertIsInstance(chosen[0], CsvExtractor)
 
     def test_content_hash_ignores_presentation(self):
         a = read_invoice(INVOICES / "INV-4471.csv")

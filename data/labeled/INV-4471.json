@@ -1,0 +1,5 @@
+{
+  "invoice": "data/invoices/INV-4471.csv",
+  "note": "the clean month from spec.md, buy column only",
+  "expected": []
+}

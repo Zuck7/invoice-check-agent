@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -80,6 +80,9 @@ class InvoiceLine:
     base_amount: Decimal | None = None
     source_page: int | None = None
 
+    # filled in by the extract stage (vision only; CSV intake is exact)
+    extract_confidence: Decimal | None = None
+
     # filled in by the normalize stage
     rate_key: str | None = None
     mapped_by: str | None = None
@@ -153,6 +156,8 @@ class Flag:
     flag_id: str
     invoice_no: str
     message: str
+    warehouse_id: str = ""
+    client_id: str = ""
     line_no: int | None = None
     line_description: str | None = None
     expected: str | None = None
@@ -161,9 +166,29 @@ class Flag:
     rate_card_version: str | None = None
     source_page: int | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime | None = None
 
     def __post_init__(self) -> None:
         get_flag(self.flag_id)  # rejects anything outside the taxonomy
+
+    @property
+    def fingerprint(self) -> str:
+        """Stable identity for this finding across re-runs.
+
+        Re-auditing the same invoice must land on the same fingerprint, so a
+        flag a human already resolved does not reappear as new work. It is
+        deliberately sensitive to ``expected``/``actual``: if the warehouse
+        re-sends with a different number, that is a different finding.
+        """
+        parts = [
+            self.warehouse_id,
+            self.invoice_no,
+            str(self.line_no),
+            self.flag_id,
+            self.expected or "",
+            self.actual or "",
+        ]
+        return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
     @property
     def severity(self) -> Severity:
@@ -176,8 +201,11 @@ class Flag:
     def to_dict(self, currency: str = "USD") -> dict[str, Any]:
         return {
             "flag": self.flag_id,
+            "fingerprint": self.fingerprint,
             "severity": self.severity.value,
             "invoice_no": self.invoice_no,
+            "warehouse_id": self.warehouse_id,
+            "client_id": self.client_id,
             "line_no": self.line_no,
             "line_description": self.line_description,
             "message": self.message,
@@ -188,6 +216,7 @@ class Flag:
             "rate_card_version": self.rate_card_version,
             "source_page": self.source_page,
             "evidence": self.evidence,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
 

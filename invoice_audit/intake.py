@@ -1,8 +1,16 @@
 """Stage 01-02: intake and extraction.
 
-v1 reads the CSV/hand-keyed format below. PDF extraction is phase 2 and plugs
-in behind :class:`Extractor` — the rest of the pipeline never learns which one
-produced the lines.
+Two extractors sit behind one :class:`Extractor` protocol, chosen by file
+suffix; the rest of the pipeline never learns which one produced the lines.
+
+* ``.csv`` / ``.txt`` -> :class:`CsvExtractor`. Exact, free, deterministic.
+  Use it for hand-keyed invoices and for any warehouse that sends structured
+  data.
+* ``.pdf`` -> :class:`PdfRouter`. A born-digital PDF is read from its text
+  layer by ``pdftext.PdfTextExtractor`` -- exact, free, offline. A scan has no
+  text layer, and anything the text parser cannot read with certainty falls
+  through to the vision model rather than being guessed at.
+* images -> ``vision.VisionExtractor``.
 
 File format: ``# key: value`` metadata lines, then a normal CSV table.
 
@@ -135,25 +143,93 @@ class CsvExtractor:
             raise IntakeError(f"{path.name}: bad metadata ({exc})") from exc
 
 
-class PdfExtractor:
-    """Phase 2 placeholder.
+class LazyVisionExtractor:
+    """Defers constructing the API client until a document actually needs it.
 
-    Kept so the wiring is visible: the engine already accepts a list of
-    extractors and picks by suffix. Implementing this is the phase 2 task, and
-    it is scored against the phase 1 engine on the labelled set.
+    Without this, importing the package would require ``anthropic`` and API
+    credentials even for a CSV-only run, and the test suite would need both.
+
+    Claims images only. PDFs go to :class:`PdfRouter`, which owns the choice
+    between the text layer and vision and calls this one directly when it
+    decides the document needs a model.
     """
+
+    _SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+
+
+    def __init__(self, **kwargs: object) -> None:
+        self._kwargs = kwargs
+        self._inner: Extractor | None = None
+
+    def supports(self, path: Path) -> bool:
+        return path.suffix.lower() in self._SUFFIXES
+
+    def extract(self, path: Path) -> Invoice:
+        if self._inner is None:
+            from .vision import VisionExtractor
+
+            self._inner = VisionExtractor(**self._kwargs)  # type: ignore[arg-type]
+        return self._inner.extract(path)
+
+
+class PdfRouter:
+    """Text layer first, vision second.
+
+    The order is a cost and determinism decision, not a quality one: when the
+    characters are in the file, reading them beats transcribing a picture of
+    them. Everything else -- scans, unfamiliar layouts, tables the parser
+    cannot label -- goes to the model.
+
+    ``last_route`` records which path a document actually took, so the report
+    can say so and so the split is measurable rather than assumed.
+    """
+
+    def __init__(self, **kwargs: object) -> None:
+        self._kwargs = kwargs
+        self._text: object | None = None
+        self._vision = LazyVisionExtractor(**kwargs)
+        self.last_route: str | None = None
+        self.routes: dict[str, int] = {"text": 0, "vision": 0}
 
     def supports(self, path: Path) -> bool:
         return path.suffix.lower() == ".pdf"
 
+    def _text_extractor(self):
+        if self._text is None:
+            from .pdftext import PdfTextExtractor
+
+            self._text = PdfTextExtractor(**self._kwargs)  # type: ignore[arg-type]
+        return self._text
+
     def extract(self, path: Path) -> Invoice:
-        raise IntakeError(
-            f"{Path(path).name}: PDF extraction is phase 2. "
-            "Hand-key the invoice to the CSV format for now."
-        )
+        from . import pdftext
+
+        reason = "pdfplumber is not installed"
+        if pdftext.available():
+            try:
+                invoice = self._text_extractor().extract(path)
+                self.last_route = "text"
+                self.routes["text"] += 1
+                return invoice
+            except pdftext.NotConfident as exc:
+                reason = str(exc)
+
+        self.last_route = "vision"
+        self.routes["vision"] += 1
+        try:
+            return self._vision.extract(path)
+        except IntakeError as exc:
+            raise IntakeError(
+                f"{Path(path).name}: text layer declined ({reason}); "
+                f"vision also failed ({exc})"
+            ) from exc
 
 
-DEFAULT_EXTRACTORS: tuple[Extractor, ...] = (CsvExtractor(), PdfExtractor())
+DEFAULT_EXTRACTORS: tuple[Extractor, ...] = (
+    CsvExtractor(),
+    PdfRouter(),
+    LazyVisionExtractor(),
+)
 
 
 def read_invoice(

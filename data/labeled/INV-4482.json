@@ -1,0 +1,42 @@
+{
+  "invoice": "data/invoices/INV-4482.csv",
+  "note": "one seeded error per flag, all fourteen",
+  "expected": [
+    {
+      "flag": "RATE_DRIFT",
+      "line_no": 1
+    },
+    {
+      "flag": "QTY_VARIANCE",
+      "line_no": 2
+    },
+    {
+      "flag": "WRONG_CLIENT_RATES",
+      "line_no": 3
+    },
+    {
+      "flag": "SURCHARGE_BASE_WRONG",
+      "line_no": 4
+    },
+    {
+      "flag": "MATH_ERROR",
+      "line_no": 5
+    },
+    {
+      "flag": "UNKNOWN",
+      "line_no": 6
+    },
+    {
+      "flag": "MISSING_LINE",
+      "rate_key": "receiving.per_pallet"
+    },
+    {
+      "flag": "STORAGE_AGING_ERROR",
+      "line_no": 7
+    },
+    {
+      "flag": "MISSING_CREDIT",
+      "credit_ref": "CN-118"
+    }
+  ]
+}

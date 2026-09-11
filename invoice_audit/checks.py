@@ -9,16 +9,19 @@ Each check yields zero or more :class:`Flag` objects carrying full provenance.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Iterator
 
+from .credits import AgreedCredit, CreditLog, NoCreditLog
 from .history import HistoryStore
 from .models import Flag, Invoice, InvoiceLine, RateCard
 from .money import ZERO, fmt, money, pct
-from .normalize import canonical
+from .normalize import PLAUSIBLE_FLOOR, canonical
+from .vision import CONFIDENCE_THRESHOLD as EXTRACT_CONFIDENCE_THRESHOLD
 from .orderdata import PeriodKey
 from .ratecards import RateCardStore
+from .snapshots import LONG_TERM_DAYS, LongTermPosition
 
 ONE = Decimal(1)
 
@@ -97,6 +100,8 @@ class CheckContext:
     counts: dict[str, Decimal] | None
     history: HistoryStore
     tolerances: Tolerances = Tolerances()
+    credits: list[AgreedCredit] = field(default_factory=list)
+    position: LongTermPosition | None = None
 
     @property
     def period(self) -> PeriodKey:
@@ -113,6 +118,8 @@ class CheckContext:
 
     def flag(self, flag_id: str, message: str, **kw: object) -> Flag:
         kw.setdefault("rate_card_version", self.card_ref)
+        kw.setdefault("warehouse_id", self.invoice.warehouse_id)
+        kw.setdefault("client_id", self.invoice.client_id)
         return Flag(
             flag_id=flag_id,
             invoice_no=self.invoice.invoice_no,
@@ -215,6 +222,30 @@ def check_rate_card_available(ctx: CheckContext) -> Iterator[Flag]:
 # --------------------------------------------------------------------------
 
 
+def check_extraction_confidence(ctx: CheckContext) -> Iterator[Flag]:
+    """Lines the extractor could not read cleanly.
+
+    Independent of whether the line mapped to the card: a confidently mapped
+    line whose rate was smudged is still a line a human should look at, because
+    every check downstream is only as good as the number it compares.
+    """
+    for line in ctx.invoice.lines:
+        if line.extract_confidence is None:
+            continue
+        if line.extract_confidence >= EXTRACT_CONFIDENCE_THRESHOLD:
+            continue
+        yield ctx.line_flag(
+            "LOW_CONFIDENCE_EXTRACTION",
+            line,
+            f"Transcribed with confidence {line.extract_confidence} after "
+            "retries. Check this line against the source document before "
+            "acting on any other flag raised on it.",
+            expected=f"confidence >= {EXTRACT_CONFIDENCE_THRESHOLD}",
+            actual=str(line.extract_confidence),
+            evidence={"stage": "extract", "source_page": line.source_page},
+        )
+
+
 def check_unknown_lines(ctx: CheckContext) -> Iterator[Flag]:
     if ctx.card is None:
         # Without a card nothing is priceable, and flagging every line as
@@ -224,12 +255,19 @@ def check_unknown_lines(ctx: CheckContext) -> Iterator[Flag]:
         if line.mapped:
             continue
 
-        if line.mapped_by == "model-rejected":
+        near_miss = (
+            line.mapped_by == "model-rejected"
+            and line.map_confidence is not None
+            and line.map_confidence >= PLAUSIBLE_FLOOR
+        )
+        if near_miss:
             yield ctx.line_flag(
                 "LOW_CONFIDENCE_EXTRACTION",
                 line,
                 f"Mapping confidence {line.map_confidence} is below threshold "
-                "after retries; the line was left unpriced.",
+                "after retries; the line was left unpriced. A reviewer "
+                "confirming the match would let this price automatically next "
+                "time.",
                 expected="a confident rate-card match",
                 actual=f"confidence {line.map_confidence}",
                 evidence={"rationale": line.map_rationale},
@@ -422,6 +460,78 @@ def check_surcharge_base(ctx: CheckContext) -> Iterator[Flag]:
         )
 
 
+def check_duplicate_charge(ctx: CheckContext) -> Iterator[Flag]:
+    """The same service billed twice: within one invoice, or across two.
+
+    Conservative on purpose. Within an invoice a line only counts as duplicated
+    when rate key, quantity and amount all match -- warehouses do legitimately
+    split one activity across several lines. Across invoices the service period
+    must match too, since billing storage every month is the job, not a fault.
+    """
+    if ctx.card is None:
+        return
+    inv = ctx.invoice
+    priced = [l for l in inv.lines if l.mapped]
+
+    seen_within: dict[tuple[str, str, str], InvoiceLine] = {}
+    for line in priced:
+        signature = (line.rate_key or "", str(line.quantity), str(line.amount))
+        first = seen_within.get(signature)
+        if first is None:
+            seen_within[signature] = line
+            continue
+        yield ctx.line_flag(
+            "DUPLICATE_CHARGE",
+            line,
+            f"Identical to line {first.line_no} on this invoice: same rate "
+            f"key, quantity and amount.",
+            expected=f"billed once (line {first.line_no})",
+            actual=f"billed again on line {line.line_no}",
+            delta=line.amount,
+            evidence={
+                "rate_key": line.rate_key,
+                "scope": "within_invoice",
+                "first_line_no": first.line_no,
+            },
+        )
+
+    prior = ctx.history.billed_in_period(
+        warehouse_id=inv.warehouse_id,
+        client_id=inv.client_id,
+        period_start=inv.period_start,
+        period_end=inv.period_end,
+        exclude_invoice_no=inv.invoice_no,
+    )
+    if not prior:
+        return
+
+    by_key: dict[str, tuple[str, str]] = {}
+    for seen, seen_line in prior:
+        by_key.setdefault(seen_line.rate_key, (seen.invoice_no, seen_line.amount))
+
+    for line in priced:
+        match = by_key.get(line.rate_key or "")
+        if match is None:
+            continue
+        prior_no, prior_amount = match
+        yield ctx.line_flag(
+            "DUPLICATE_CHARGE",
+            line,
+            f"{line.rate_key} was already billed for "
+            f"{inv.period_start.isoformat()}..{inv.period_end.isoformat()} on "
+            f"invoice {prior_no} ({fmt(money(prior_amount), inv.currency)}).",
+            expected=f"not previously billed for this period",
+            actual=f"also on {prior_no}",
+            delta=line.amount,
+            evidence={
+                "rate_key": line.rate_key,
+                "scope": "across_invoices",
+                "prior_invoice_no": prior_no,
+                "prior_amount": prior_amount,
+            },
+        )
+
+
 # --------------------------------------------------------------------------
 # Quantity audit (stage 05)
 # --------------------------------------------------------------------------
@@ -480,6 +590,18 @@ def check_missing_lines(ctx: CheckContext) -> Iterator[Flag]:
     inv = ctx.invoice
     billed = {line.rate_key for line in inv.lines if line.mapped}
 
+    # A service period is often split across several invoices -- a monthly bill
+    # plus a later correction. Activity already billed elsewhere for this
+    # period is not missing, it is just on the other document.
+    for _, prior_line in ctx.history.billed_in_period(
+        warehouse_id=inv.warehouse_id,
+        client_id=inv.client_id,
+        period_start=inv.period_start,
+        period_end=inv.period_end,
+        exclude_invoice_no=inv.invoice_no,
+    ):
+        billed.add(prior_line.rate_key)
+
     for key, count in sorted(ctx.counts.items()):
         if key in billed or count <= 0:
             continue
@@ -502,16 +624,121 @@ def check_missing_lines(ctx: CheckContext) -> Iterator[Flag]:
         )
 
 
+def check_missing_credits(ctx: CheckContext) -> Iterator[Flag]:
+    """Credits the warehouse agreed to and did not apply.
+
+    A credit shows up as a negative line, or as a line naming its reference.
+    Nothing else counts: an invoice that is merely smaller than expected is not
+    evidence a specific credit was honoured.
+    """
+    if not ctx.credits:
+        return
+    inv = ctx.invoice
+
+    applied = sum((l.amount for l in inv.lines if l.amount < ZERO), ZERO)
+    referenced = " ".join(canonical(l.description) for l in inv.lines)
+
+    for credit in ctx.credits:
+        if canonical(credit.credit_ref) and canonical(credit.credit_ref) in referenced:
+            continue
+        if applied <= -credit.amount:
+            # Enough credit is on the invoice to cover it; which line carries
+            # it is the warehouse's business.
+            continue
+        yield ctx.flag(
+            "MISSING_CREDIT",
+            f"Credit {credit.credit_ref} for "
+            f"{fmt(credit.amount, inv.currency)} was agreed"
+            + (f" on {credit.agreed_date.isoformat()}" if credit.agreed_date else "")
+            + f" for this period but does not appear on the invoice."
+            + (f" ({credit.note})" if credit.note else ""),
+            expected=f"a credit line of {fmt(credit.amount, inv.currency)}",
+            actual=(
+                f"{fmt(-applied, inv.currency)} of credits on the invoice"
+                if applied
+                else "no credit line"
+            ),
+            delta=credit.amount,
+            evidence={
+                "credit_ref": credit.credit_ref,
+                "rate_key": credit.rate_key,
+                "agreed_date": (
+                    credit.agreed_date.isoformat() if credit.agreed_date else None
+                ),
+                "credits_applied": str(-applied),
+            },
+        )
+
+
+def check_storage_aging(ctx: CheckContext) -> Iterator[Flag]:
+    """Long-term storage billed on pallets that do not qualify.
+
+    Two distinct faults, reported as one flag with the numbers to argue it: the
+    surcharge billed on more pallets than were old enough and on hand, and the
+    surcharge billed on pallets that had already shipped out.
+    """
+    if ctx.position is None or ctx.card is None:
+        return
+    inv = ctx.invoice
+
+    for line in inv.lines:
+        if not line.mapped:
+            continue
+        entry = ctx.card.entry(line.rate_key or "")
+        if entry is None or entry.is_percent:
+            continue
+        if "long_term" not in entry.key:
+            continue
+
+        supported = Decimal(ctx.position.qualifying_count)
+        if line.quantity <= supported:
+            continue
+
+        rate = line.unit_rate if line.unit_rate is not None else entry.rate
+        delta = money((line.quantity - supported) * rate)
+        shipped_out = [p.pallet_id for p in ctx.position.already_shipped]
+
+        detail = (
+            f" {len(shipped_out)} of them "
+            f"({', '.join(sorted(shipped_out)[:5])}"
+            + (", ..." if len(shipped_out) > 5 else "")
+            + ") had already shipped before the period opened."
+            if shipped_out
+            else ""
+        )
+
+        yield ctx.line_flag(
+            "STORAGE_AGING_ERROR",
+            line,
+            f"Long-term storage billed on {line.quantity} "
+            f"{uom_label(entry.uom, line.quantity)}, but only {supported} were "
+            f"{LONG_TERM_DAYS}+ days old and on hand this period.{detail}",
+            expected=f"{supported} {uom_label(entry.uom, supported)}",
+            actual=f"{line.quantity} {uom_label(entry.uom, line.quantity)}",
+            delta=delta,
+            evidence={
+                "rate_key": entry.key,
+                "qualifying_pallets": ctx.position.qualifying_count,
+                "already_shipped": sorted(shipped_out),
+                "long_term_days": LONG_TERM_DAYS,
+            },
+        )
+
+
 #: Run in this order so the queue reads the way a person would work it:
 #: is it a duplicate, can we price it at all, then rate, then quantity.
 ALL_CHECKS = (
     check_duplicate_invoice,
     check_rate_card_available,
+    check_extraction_confidence,
     check_unknown_lines,
     check_math,
     check_uom,
     check_rates,
     check_surcharge_base,
+    check_duplicate_charge,
     check_quantities,
     check_missing_lines,
+    check_storage_aging,
+    check_missing_credits,
 )

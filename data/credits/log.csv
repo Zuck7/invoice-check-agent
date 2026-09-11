@@ -1,0 +1,4 @@
+credit_ref,warehouse_id,client_id,period_start,period_end,amount,rate_key,agreed_date,status,note
+CN-118,WH-NORTH,ACME,2026-08-01,2026-08-31,310.00,storage.per_pallet_month,2026-09-02,agreed,agreed after the August storage dispute
+CN-104,WH-NORTH,ACME,2026-07-01,2026-07-31,88.00,receiving.per_pallet,2026-08-02,applied,settled on INV-4471
+CN-121,WH-NORTH,ACME,2026-08-01,2026-08-31,45.00,,2026-09-03,rejected,warehouse disputed and we accepted

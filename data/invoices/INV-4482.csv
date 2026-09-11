@@ -6,6 +6,8 @@
 #   line 5  MATH_ERROR            22 x 28.00 is 616.00, extended as 644.00
 #   line 6  UNKNOWN               no card anywhere prices a destuff fee
 #   (absent) MISSING_LINE         WMS shows 40 pallets received, never billed
+#   line 7  STORAGE_AGING_ERROR   12 pallets billed LTS; only 9 qualify
+#   (absent) MISSING_CREDIT        CN-118 was agreed and never applied
 # invoice_no: INV-4482
 # warehouse_id: WH-NORTH
 # client_id: ACME
@@ -13,7 +15,7 @@
 # period_start: 2026-08-01
 # period_end: 2026-08-31
 # currency: USD
-# stated_total: 23737.00
+# stated_total: 23845.00
 line_no,description,quantity,uom,unit_rate,amount,base_amount,source_page
 1,Storage · per pallet/mo,120,pallet/mo,20.00,2400.00,,1
 2,Pick & pack · per order,3200,order,2.50,8000.00,,1
@@ -21,3 +23,4 @@ line_no,description,quantity,uom,unit_rate,amount,base_amount,source_page
 4,Parcel/shipping · carrier cost,1,shipment,,9975.00,9500.00,2
 5,B2B freight · per pallet out,22,pallet,28.00,644.00,,2
 6,Container destuff fee,1,,,450.00,,2
+7,Long-term storage surcharge,12,pallet,9.00,108.00,,1

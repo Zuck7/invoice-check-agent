@@ -1,0 +1,12 @@
+# July storage billed again on a September invoice. Expected: DUPLICATE_CHARGE
+# on line 1 when INV-4471 is already in history.
+# invoice_no: INV-4501
+# warehouse_id: WH-NORTH
+# client_id: ACME
+# invoice_date: 2026-09-10
+# period_start: 2026-07-01
+# period_end: 2026-07-31
+# currency: USD
+# stated_total: 2160.00
+line_no,description,quantity,uom,unit_rate,amount,base_amount,source_page
+1,Storage · per pallet/mo,120,pallet/mo,18.00,2160.00,,1

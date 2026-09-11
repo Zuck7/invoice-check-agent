@@ -12,15 +12,19 @@ rather than owned by any one of them, which is why it is injected here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .checks import ALL_CHECKS, CheckContext, Tolerances
-from .history import HistoryStore, SeenInvoice
+from .credits import CreditLog, NoCreditLog
+from .flagstore import FlagStore
+from .history import HistoryStore, SeenInvoice, SeenLine
 from .intake import DEFAULT_EXTRACTORS, Extractor, read_invoice
 from .models import AuditResult, Invoice
-from .normalize import LineMapper, NullMapper, Normalizer
+from .normalize import FuzzyMapper, LineMapper, Normalizer
 from .orderdata import NoOrderData, OrderDataProvider, PeriodKey
 from .ratecards import RateCardStore
+from .snapshots import NoSnapshots, SnapshotSource
 
 
 @dataclass
@@ -28,7 +32,10 @@ class AuditEngine:
     store: RateCardStore
     order_data: OrderDataProvider = field(default_factory=NoOrderData)
     history: HistoryStore = field(default_factory=HistoryStore)
-    mapper: LineMapper = field(default_factory=NullMapper)
+    flag_store: FlagStore = field(default_factory=FlagStore)
+    credit_log: CreditLog = field(default_factory=NoCreditLog)
+    snapshots: SnapshotSource = field(default_factory=NoSnapshots)
+    mapper: LineMapper = field(default_factory=FuzzyMapper)
     tolerances: Tolerances = field(default_factory=Tolerances)
     extractors: tuple[Extractor, ...] = DEFAULT_EXTRACTORS
     record_history: bool = True
@@ -86,6 +93,30 @@ class AuditEngine:
                     "audited."
                 )
 
+        credits = self.credit_log.outstanding(
+            invoice.warehouse_id,
+            invoice.client_id,
+            invoice.period_start,
+            invoice.period_end,
+        )
+        if isinstance(self.credit_log, NoCreditLog):
+            notes.append(
+                "No dispute log: MISSING_CREDIT was not checked. An agreed "
+                "credit that never landed would be invisible."
+            )
+
+        position = self.snapshots.position(
+            invoice.warehouse_id,
+            invoice.client_id,
+            invoice.period_start,
+            invoice.period_end,
+        )
+        if position is None and card is not None:
+            notes.append(
+                "No pallet-level inventory snapshot for this client: "
+                "STORAGE_AGING_ERROR was not checked."
+            )
+
         ctx = CheckContext(
             invoice=invoice,
             card=card,
@@ -93,10 +124,23 @@ class AuditEngine:
             counts=counts,
             history=self.history,
             tolerances=self.tolerances,
+            credits=credits,
+            position=position,
         )
 
         # 04-06
+        seen_at = datetime.now(timezone.utc)
         flags = [flag for check in ALL_CHECKS for flag in check(ctx)]
+        for flag in flags:
+            flag.created_at = seen_at
+            # An existing record keeps whatever status a human gave it, so a
+            # resolved finding does not come back as new work on the next run.
+            self.flag_store.upsert(
+                flag,
+                period_month=invoice.period_start.strftime("%Y-%m"),
+                currency=invoice.currency,
+                now=seen_at,
+            )
 
         unmapped = [l for l in invoice.lines if not l.mapped]
         if card is not None and unmapped:
@@ -114,6 +158,17 @@ class AuditEngine:
                     content_hash=invoice.content_hash(),
                     invoice_date=invoice.invoice_date,
                     source_path=invoice.source_path,
+                    period_start=invoice.period_start,
+                    period_end=invoice.period_end,
+                    lines=tuple(
+                        SeenLine(
+                            rate_key=line.rate_key or "",
+                            quantity=str(line.quantity),
+                            amount=str(line.amount),
+                        )
+                        for line in invoice.lines
+                        if line.mapped
+                    ),
                 )
             )
 

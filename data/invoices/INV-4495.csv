@@ -1,0 +1,17 @@
+# Same correct month as INV-4471, but the warehouse reworded every line.
+# Tests precision: the mapper must recognise these without inventing flags.
+# invoice_no: INV-4495
+# warehouse_id: WH-NORTH
+# client_id: ACME
+# invoice_date: 2026-08-06
+# period_start: 2026-07-01
+# period_end: 2026-07-31
+# currency: USD
+# stated_total: 22136.00
+line_no,description,quantity,uom,unit_rate,amount,base_amount,source_page
+1,Inbound receiving (pallets) 07/2026,40,pallet,6.00,240.00,,1
+2,Storage charges - pallet/month (Jul 2026),120,pallet/mo,18.00,2160.00,,1
+3,"Pick and pack, per order — July",3200,order,2.50,8000.00,,1
+4,Additional pick unit charges,5400,unit,0.30,1620.00,,1
+5,Carrier cost pass-through,1,shipment,,9500.00,9500.00,2
+6,Outbound freight per pallet (B2B),22,pallet,28.00,616.00,,2

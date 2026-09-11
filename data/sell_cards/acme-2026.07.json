@@ -1,0 +1,52 @@
+{
+  "card_id": "SELL-ACME",
+  "version": "2026.07",
+  "warehouse_id": "*",
+  "client_id": "ACME",
+  "effective_from": "2026-01-01",
+  "effective_to": null,
+  "entries": {
+    "receiving.per_pallet": {
+      "label": "Receiving",
+      "uom": "pallet",
+      "kind": "per_unit",
+      "rate": "9.00"
+    },
+    "storage.per_pallet_month": {
+      "label": "Storage",
+      "uom": "pallet_month",
+      "kind": "per_unit",
+      "rate": "25.00"
+    },
+    "pickpack.per_order": {
+      "label": "Pick and pack",
+      "uom": "order",
+      "kind": "per_unit",
+      "rate": "3.75"
+    },
+    "pick.per_extra_unit": {
+      "label": "Pick, extra unit",
+      "uom": "unit",
+      "kind": "per_unit",
+      "rate": "0.45"
+    },
+    "parcel.passthrough": {
+      "label": "Parcel and shipping",
+      "uom": "shipment",
+      "kind": "percent_of_base",
+      "percent": "10"
+    },
+    "freight.b2b_per_pallet_out": {
+      "label": "B2B freight",
+      "uom": "pallet",
+      "kind": "per_unit",
+      "rate": "38.00"
+    },
+    "storage.long_term_surcharge": {
+      "label": "Long-term storage surcharge",
+      "uom": "pallet",
+      "kind": "per_unit",
+      "rate": "13.50"
+    }
+  }
+}

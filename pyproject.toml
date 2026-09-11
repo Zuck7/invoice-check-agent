@@ -1,0 +1,24 @@
+[project]
+name = "invoice-audit"
+version = "1.4.0"
+description = "Audits inbound warehouse invoices against the buy rate card and order data."
+requires-python = ">=3.11"
+
+# The audit engine itself has no dependencies: intake, mapping, every check,
+# the flag store and the scorer are stdlib only. Keep it that way — the
+# arithmetic that decides money should not have a supply chain.
+dependencies = []
+
+[project.optional-dependencies]
+# The text-layer fast path for born-digital PDFs.
+pdf = ["pdfplumber>=0.11"]
+# Scans and images. A CSV-only deployment installs neither, and the test suite
+# imports neither — it fakes the client and skips the pdf tests.
+vision = ["anthropic>=1.0"]
+all = ["pdfplumber>=0.11", "anthropic>=1.0"]
+
+[project.scripts]
+invoice-audit = "invoice_audit.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["invoice_audit*"]

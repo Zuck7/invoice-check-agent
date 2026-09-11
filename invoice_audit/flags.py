@@ -168,8 +168,8 @@ FLAGS: dict[str, FlagDef] = {
 #: human even when the invoice total is otherwise correct.
 BLOCKING = frozenset({"UNKNOWN"})
 
-#: Delivered by this release.
-V1_PHASES = frozenset({1, 2})
+#: Delivered by this release: the whole taxonomy.
+V1_PHASES = frozenset({1, 2, 3})
 
 
 def implemented() -> list[FlagDef]:

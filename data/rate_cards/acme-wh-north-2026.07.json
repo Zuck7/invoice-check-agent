@@ -71,6 +71,18 @@
         "Outbound freight per pallet",
         "B2B pallet out"
       ]
+    },
+    "storage.long_term_surcharge": {
+      "label": "Long-term storage surcharge",
+      "uom": "pallet",
+      "kind": "per_unit",
+      "rate": "9.00",
+      "aliases": [
+        "Long term storage surcharge",
+        "LTS surcharge",
+        "Long-term storage penalty",
+        "Aged inventory surcharge"
+      ]
     }
   }
 }
