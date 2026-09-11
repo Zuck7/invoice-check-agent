@@ -38,6 +38,7 @@ export const getFlags = () => request("/api/flags");
 export const getInvoices = () => request("/api/invoices");
 export const getTrends = () => request("/api/trends");
 export const getTaxonomy = () => request("/api/taxonomy");
+export const getMode = () => request("/api/mode");
 
 export const actOnFlag = (fingerprint, body) =>
   request(`/api/flags/${fingerprint}`, {

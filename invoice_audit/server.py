@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import os
 import secrets
 import webbrowser
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from . import vision
 from .flagstore import ESCALATION_DAYS, FlagRecord
 from .workspace import MAX_UPLOAD_BYTES, Paths, UploadRejected, Workspace
 
@@ -36,9 +38,12 @@ def record_json(record: FlagRecord, now: datetime | None = None) -> dict[str, An
 class ApiHandler(BaseHTTPRequestHandler):
     server_version = "invoice-audit"
 
-    def __init__(self, *args: Any, workspace: Workspace, token: str, **kw: Any) -> None:
+    def __init__(
+        self, *args: Any, workspace: Workspace, token: str, demo: bool = False, **kw: Any
+    ) -> None:
         self.workspace = workspace
         self.token = token
+        self.demo = demo
         super().__init__(*args, **kw)
 
     # -- plumbing ----------------------------------------------------------
@@ -68,6 +73,11 @@ class ApiHandler(BaseHTTPRequestHandler):
         machine from resolving flags, and it is not a substitute for real auth
         if this ever leaves a trusted network.
         """
+        if self.demo:
+            # A public demo has no one to hand a token to. Writes are open, and
+            # everything they can touch is disposable: the data resets on
+            # restart and model calls are capped.
+            return True
         header = self.headers.get("Authorization", "")
         supplied = header[7:] if header.startswith("Bearer ") else ""
         return secrets.compare_digest(supplied, self.token)
@@ -89,6 +99,13 @@ class ApiHandler(BaseHTTPRequestHandler):
             },
             "/api/taxonomy": self._taxonomy,
             "/api/failures": lambda: ws.failures,
+            "/api/mode": lambda: {
+                "demo": self.demo,
+                "vision_calls_used": vision.calls_made(),
+                "vision_call_limit": int(
+                    os.environ.get("INVOICE_AUDIT_VISION_LIMIT", "0")
+                ),
+            },
         }
         if path in routes:
             self._json(200, routes[path]())
@@ -250,9 +267,10 @@ def serve(
     port: int = 8765,
     token: str | None = None,
     open_browser: bool = True,
+    demo: bool = False,
 ) -> None:
     token = token or secrets.token_urlsafe(16)
-    handler = partial(ApiHandler, workspace=workspace, token=token)
+    handler = partial(ApiHandler, workspace=workspace, token=token, demo=demo)
     try:
         httpd = ThreadingHTTPServer((host, port), handler)
     except OSError as exc:
@@ -263,12 +281,15 @@ def serve(
             ) from exc
         raise
 
-    url = f"http://{host}:{port}/?token={token}"
+    url = f"http://{host}:{port}/" + ("" if demo else f"?token={token}")
     summary = workspace.summary()
     print(f"Invoice audit UI on http://{host}:{port}/")
+    if demo:
+        print("  mode      DEMO — writes are open, data resets on restart")
     print(f"  invoices  {summary['invoices']} ({summary['flagged']} flagged)")
     print(f"  flags     {summary['open_flags']} open, {summary['escalated']} escalated")
-    print(f"  token     {token}")
+    if not demo:
+        print(f"  token     {token}")
     if not UI_DIST.exists():
         print("  ! UI bundle missing — run: npm --prefix ui install && npm --prefix ui run build")
     print("  ctrl-c to stop")

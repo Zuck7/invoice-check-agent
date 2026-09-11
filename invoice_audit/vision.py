@@ -25,6 +25,7 @@ Gemini and Claude cannot change what counts as a well-formed invoice.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -42,6 +43,27 @@ MAX_EXTRACT_RETRIES = 2
 
 #: Per-line transcription confidence below this earns LOW_CONFIDENCE_EXTRACTION.
 CONFIDENCE_THRESHOLD = Decimal("0.80")
+
+#: Process-wide ceiling on model calls, from INVOICE_AUDIT_VISION_LIMIT.
+#: 0 means no limit. A public demo sets this so a stranger cannot spend an
+#: unbounded amount of someone's API credit by uploading scans in a loop.
+def _call_limit() -> int:
+    try:
+        return int(os.environ.get("INVOICE_AUDIT_VISION_LIMIT", "0"))
+    except ValueError:
+        return 0
+
+
+_calls_made = 0
+
+
+def calls_made() -> int:
+    return _calls_made
+
+
+def reset_calls() -> None:
+    global _calls_made
+    _calls_made = 0
 
 _MEDIA = {
     ".pdf": "application/pdf",
@@ -226,7 +248,17 @@ class VisionExtractor:
     # -- API ---------------------------------------------------------------
 
     def _ask(self, data: bytes, media_type: str, instruction: str) -> dict[str, Any]:
+        global _calls_made
         assert self.backend is not None
+
+        limit = _call_limit()
+        if limit and _calls_made >= limit:
+            raise ExtractionError(
+                f"This deployment allows {limit} model reads per restart and has "
+                "used them all. CSV and text-layer PDF uploads still work — they "
+                "never call a model."
+            )
+        _calls_made += 1
         try:
             text = self.backend.transcribe(
                 data=data,

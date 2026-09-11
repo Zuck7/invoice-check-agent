@@ -1,0 +1,20 @@
+# Fly.io alternative: fly launch --no-deploy, then fly deploy.
+app = "invoice-audit-demo"
+primary_region = "iad"
+
+[build]
+  dockerfile = "../Dockerfile"
+
+[env]
+  INVOICE_AUDIT_DEMO = "1"
+  INVOICE_AUDIT_VISION_LIMIT = "25"
+  PORT = "8765"
+
+[http_service]
+  internal_port = 8765
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+# Set the key out of band:  fly secrets set GOOGLE_API_KEY=...
