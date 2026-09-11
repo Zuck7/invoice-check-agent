@@ -1,0 +1,18 @@
+# Render blueprint. Push to GitHub, then New → Blueprint and point at the repo.
+services:
+  - type: web
+    name: invoice-audit-demo
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/mode
+    envVars:
+      # Public demo: writes open, data disposable, model calls capped.
+      - key: INVOICE_AUDIT_DEMO
+        value: "1"
+      - key: INVOICE_AUDIT_VISION_LIMIT
+        value: "25"
+      - key: INVOICE_AUDIT_VISION
+        value: gemini
+      # Set this in the Render dashboard, never in this file.
+      - key: GOOGLE_API_KEY
+        sync: false

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -155,6 +156,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--token", default=None, help="reuse a fixed token")
     serve.add_argument("--no-browser", action="store_true")
+    serve.add_argument(
+        "--demo",
+        action="store_true",
+        help="public demo: no token, disposable data, capped model calls",
+    )
 
     scorer = sub.add_parser("score", help="score the engine against the labelled set")
     scorer.add_argument("--labels", type=Path, default=DEFAULT_LABELS, metavar="DIR")
@@ -365,12 +371,20 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    # A host platform tells the process where to listen; its choice wins.
+    host = os.environ.get("HOST") or args.host
+    port = int(os.environ.get("PORT") or args.port)
+    demo = args.demo or os.environ.get("INVOICE_AUDIT_DEMO") == "1"
+    if demo and host == "127.0.0.1":
+        host = "0.0.0.0"  # a demo nobody can reach is not a demo
+
     run_server(
         workspace,
-        host=args.host,
-        port=args.port,
+        host=host,
+        port=port,
         token=args.token,
-        open_browser=not args.no_browser,
+        open_browser=not args.no_browser and not demo,
+        demo=demo,
     )
     return 0
 

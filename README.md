@@ -99,6 +99,48 @@ Useful switches:
 
 Reference data lives in `ratecards.py`, `orderdata.py` and `history.py`.
 
+## Hosting a public demo
+
+```sh
+docker build -t invoice-audit .
+docker run -p 8765:8765 invoice-audit
+```
+
+Or push to GitHub and point [Render](https://render.com) at `deploy/render.yaml`
+(free tier, Docker runtime); `deploy/fly.toml` covers Fly.io. Both read `PORT`
+from the platform and health-check `/api/mode`.
+
+The image is a two-stage build — node compiles the UI, the runtime carries
+only Python — runs as a non-root user, and is ~247 MB.
+
+### What `--demo` changes
+
+A public URL has nobody to hand a token to, so demo mode opens writes. That is
+only safe because everything reachable is disposable:
+
+| | normal | `--demo` |
+|---|---|---|
+| writes | token required | open |
+| uploaded files | kept | gone on restart |
+| resolved flags | persist | gone on restart |
+| model calls | unlimited | capped by `INVOICE_AUDIT_VISION_LIMIT` |
+| binds to | `127.0.0.1` | `0.0.0.0` |
+
+The cap matters: without it a stranger can spend an unbounded amount of your
+API credit by uploading scans in a loop. At the limit, uploads still work —
+CSVs and text-layer PDFs never call a model — and the message says so.
+
+The upload guards do **not** relax in demo mode: type, size, duplicate-name and
+traversal checks all still apply, and the UI banner tells visitors the data is
+shared and temporary.
+
+### What this is still not
+
+Demo mode is safe to *abuse*, not secure. There is no per-visitor isolation, no
+rate limiting, and no identity — one visitor can resolve a flag another raised.
+For anything real, drop `--demo`, put it behind your own auth, and give it a
+disk that survives a restart.
+
 ## Measuring it
 
 `score` runs the engine over `data/labeled/` and reports recall, precision and

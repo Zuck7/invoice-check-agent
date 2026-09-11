@@ -1,0 +1,16 @@
+.git
+.venv
+ui/node_modules
+invoice_audit/ui/dist
+**/__pycache__
+*.pyc
+.env
+.env.*
+!.env.example
+tests
+data/flags.json
+data/history.json
+
+# The demo invoice ships in examples/ only — pre-seeding it would make
+# the visitor's first upload flag as a duplicate.
+data/invoices/DEMO-*

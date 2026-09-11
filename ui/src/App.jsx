@@ -21,18 +21,20 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [pending, setPending] = useState(null);
 
-  const canWrite = api.hasToken();
+  const demo = data?.mode?.demo ?? false;
+  const canWrite = demo || api.hasToken();
 
   const load = useCallback(async () => {
     try {
-      const [summary, flags, invoices, trends, taxonomy] = await Promise.all([
+      const [summary, flags, invoices, trends, taxonomy, mode] = await Promise.all([
         api.getSummary(),
         api.getFlags(),
         api.getInvoices(),
         api.getTrends(),
         api.getTaxonomy(),
+        api.getMode(),
       ]);
-      setData({ summary, flags, invoices, trends, taxonomy });
+      setData({ summary, flags, invoices, trends, taxonomy, mode });
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -106,7 +108,7 @@ export default function App() {
     );
   }
 
-  const { summary, flags, invoices, trends, taxonomy } = data;
+  const { summary, flags, invoices, trends, taxonomy, mode } = data;
   const openCount = flags.filter((f) => f.status === "open").length;
   const escalated = flags.filter((f) => f.status === "open" && f.escalated).length;
   const missingFeeds = (summary.sources ?? []).filter((s) => !s.present).length;
@@ -119,6 +121,11 @@ export default function App() {
           <h1>Invoice Audit</h1>
         </div>
         <div className="top-right">
+          {demo && (
+            <span className="chip warn" title="Shared public demo — anything you change resets when the server restarts">
+              demo
+            </span>
+          )}
           {!canWrite && (
             <span className="chip warn" title="Open the URL the CLI printed, including its token">
               read only
@@ -164,6 +171,14 @@ export default function App() {
         {summary.invoices} invoices audited · straight-through {summary.straight_through ?? "—"}%
         · escalation at {summary.escalation_days} days, inside the shortest dispute window.
         {!canWrite && " Reopen the link the CLI printed to resolve flags."}
+        {demo && (
+          <>
+            {" "}This is a shared demo: uploads and resolutions are public and reset
+            when the server restarts.
+            {mode.vision_call_limit > 0 &&
+              ` Scanned documents use a model, capped at ${mode.vision_call_limit} reads per restart (${mode.vision_calls_used} used).`}
+          </>
+        )}
       </footer>
 
       <ResolveDialog
