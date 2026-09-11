@@ -1,8 +1,13 @@
 {
-  "invoice": "data/invoices/INV-4501.csv",
+  "invoice": "data/samples/INV-4501.csv",
   "note": "July storage billed a second time on a September invoice",
-  "prior": ["data/invoices/INV-4471.csv"],
+  "prior": [
+    "data/invoices/INV-4471.csv"
+  ],
   "expected": [
-    {"flag": "DUPLICATE_CHARGE", "line_no": 1}
+    {
+      "flag": "DUPLICATE_CHARGE",
+      "line_no": 1
+    }
   ]
 }

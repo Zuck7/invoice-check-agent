@@ -1,0 +1,17 @@
+# invoice_no: INV-5007
+# warehouse_id: WH-NORTH
+# client_id: ACME
+# invoice_date: 2026-11-05
+# period_start: 2026-10-01
+# period_end: 2026-10-31
+# currency: USD
+# stated_total: 25511.00
+line_no,description,quantity,uom,unit_rate,amount,base_amount,source_page
+1,Receiving · per pallet,44,pallet,6.00,264.00,,1
+2,Storage · per pallet/mo,126,pallet/mo,21.00,2646.00,,1
+3,Pick & pack · per order,3560,order,2.50,8900.00,,1
+4,Pick · per extra unit,5900,unit,0.30,1770.00,,1
+5,Parcel/shipping · carrier cost,1,shipment,,10710.00,10200.00,2
+6,B2B freight · per pallet out,25,pallet,28.00,728.00,,2
+7,Long-term storage surcharge,12,pallet,9.00,108.00,,2
+8,Pallet re-wrap & labelling,1,,,385.00,,2

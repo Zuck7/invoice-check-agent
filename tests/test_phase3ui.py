@@ -13,7 +13,7 @@ from invoice_audit import AuditEngine, CsvOrderData, HistoryStore, RateCardStore
 from invoice_audit.credits import AgreedCredit, CsvCreditLog, NoCreditLog
 from invoice_audit.flagstore import FlagStore, Status
 from invoice_audit.models import Flag
-from invoice_audit.server import page, record_json
+from invoice_audit.server import UI_DIST, record_json
 from invoice_audit.snapshots import (
     LONG_TERM_DAYS,
     CsvSnapshots,
@@ -27,6 +27,7 @@ WMS = ROOT / "data" / "wms" / "counts.csv"
 CREDITS = ROOT / "data" / "credits" / "log.csv"
 SNAPSHOTS = ROOT / "data" / "snapshots" / "pallets.csv"
 INVOICES = ROOT / "data" / "invoices"
+SAMPLES = ROOT / "data" / "samples"
 
 
 def build_engine(**kw) -> AuditEngine:
@@ -250,30 +251,11 @@ class SnapshotTests(unittest.TestCase):
 # --------------------------------------------------------------------------
 
 
-class ServerRenderTests(unittest.TestCase):
-    def _store(self) -> FlagStore:
-        engine = build_engine()
-        engine.audit_path(INVOICES / "INV-4482.csv")
-        return engine.flag_store
 
-    def _seed(self, html: str) -> dict:
-        match = re.search(r"window\.__QUEUE__ = (.*?);</script>", html, re.S)
-        self.assertIsNotNone(match, "page carries no seeded data")
-        return json.loads(match.group(1))
+class BundleTests(unittest.TestCase):
+    """The UI is now a built React app, not a server-rendered template."""
 
-    def test_page_embeds_every_flag(self):
-        store = self._store()
-        data = self._seed(page(store))
-        self.assertEqual(len(data["flags"]), len(store))
-        self.assertTrue(data["meta"]["live"])
-
-    def test_rows_carry_the_provenance_a_reviewer_needs(self):
-        data = self._seed(page(self._store()))
-        row = next(f for f in data["flags"] if f["flag"] == "RATE_DRIFT")
-        for field in ("expected", "actual", "rate_card_version", "delta", "fingerprint"):
-            self.assertIsNotNone(row[field], field)
-
-    def test_age_and_escalation_are_computed_for_the_page(self):
+    def test_flag_rows_carry_age_and_escalation_for_the_page(self):
         store = FlagStore()
         old = datetime.now(timezone.utc) - timedelta(days=30)
         record = store.upsert(
@@ -288,28 +270,16 @@ class ServerRenderTests(unittest.TestCase):
         self.assertGreaterEqual(payload["age_days"], 30)
         self.assertTrue(payload["escalated"])
 
-    def test_preview_mode_is_marked_not_live(self):
-        data = self._seed(page(self._store(), live=False))
-        self.assertFalse(data["meta"]["live"])
-
-    def test_seed_cannot_break_out_of_the_script_tag(self):
-        store = FlagStore()
-        store.upsert(
-            Flag(
-                flag_id="UNKNOWN", invoice_no="INV-1",
-                message="</script><script>alert(1)</script>",
-                warehouse_id="WH", line_no=1, expected="a", actual="b",
-            ),
-            period_month="2026-07",
-        )
-        html = page(store)
-        self.assertNotIn("</script><script>alert(1)", html)
-        self.assertIn("<\\/script>", html)
-
-    def test_page_is_self_contained_except_for_fonts(self):
-        html = page(self._store())
+    @unittest.skipUnless(UI_DIST.exists(), "UI not built")
+    def test_the_built_bundle_is_self_contained_except_for_fonts(self):
+        html = (UI_DIST / "index.html").read_text(encoding="utf-8")
         external = re.findall(r'(?:src|href)="(https?://[^"]+)"', html)
         self.assertTrue(all("fonts.g" in u for u in external), external)
+
+    @unittest.skipUnless(UI_DIST.exists(), "UI not built")
+    def test_the_bundle_has_assets(self):
+        self.assertTrue(list((UI_DIST / "assets").glob("*.js")))
+        self.assertTrue(list((UI_DIST / "assets").glob("*.css")))
 
 
 if __name__ == "__main__":

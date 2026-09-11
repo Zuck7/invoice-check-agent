@@ -23,6 +23,7 @@ WMS = ROOT / "data" / "wms" / "counts.csv"
 CREDITS = ROOT / "data" / "credits" / "log.csv"
 SNAPSHOTS = ROOT / "data" / "snapshots" / "pallets.csv"
 INVOICES = ROOT / "data" / "invoices"
+SAMPLES = ROOT / "data" / "samples"
 LABELS = ROOT / "data" / "labeled"
 
 
@@ -230,7 +231,7 @@ class DuplicateChargeTests(unittest.TestCase):
     def test_same_period_billed_on_two_invoices(self):
         engine = build_engine()
         engine.audit_path(INVOICES / "INV-4471.csv")
-        result = engine.audit_path(INVOICES / "INV-4501.csv")
+        result = engine.audit_path(SAMPLES / "INV-4501.csv")
         dupes = [f for f in result.flags if f.flag_id == "DUPLICATE_CHARGE"]
         self.assertEqual(len(dupes), 1)
         self.assertEqual(dupes[0].evidence["scope"], "across_invoices")
@@ -280,12 +281,12 @@ class MissingLineAcrossInvoicesTests(unittest.TestCase):
         """A correction invoice must not re-flag everything on the main one."""
         engine = build_engine()
         engine.audit_path(INVOICES / "INV-4471.csv")
-        result = engine.audit_path(INVOICES / "INV-4501.csv")
+        result = engine.audit_path(SAMPLES / "INV-4501.csv")
         self.assertNotIn("MISSING_LINE", flag_ids(result))
 
     def test_without_that_history_it_still_flags(self):
         engine = build_engine()
-        result = engine.audit_path(INVOICES / "INV-4501.csv")
+        result = engine.audit_path(SAMPLES / "INV-4501.csv")
         self.assertIn("MISSING_LINE", flag_ids(result))
 
 

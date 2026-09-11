@@ -194,11 +194,17 @@ class PdfRouter:
     def supports(self, path: Path) -> bool:
         return path.suffix.lower() == ".pdf"
 
+    #: Settings that belong to the model backend, not the text-layer parser.
+    _VISION_ONLY = frozenset({"provider", "api_key", "model", "backend"})
+
     def _text_extractor(self):
         if self._text is None:
             from .pdftext import PdfTextExtractor
 
-            self._text = PdfTextExtractor(**self._kwargs)  # type: ignore[arg-type]
+            kwargs = {
+                k: v for k, v in self._kwargs.items() if k not in self._VISION_ONLY
+            }
+            self._text = PdfTextExtractor(**kwargs)  # type: ignore[arg-type]
         return self._text
 
     def extract(self, path: Path) -> Invoice:

@@ -44,6 +44,7 @@ WMS = ROOT / "data" / "wms" / "counts.csv"
 CREDITS = ROOT / "data" / "credits" / "log.csv"
 SNAPSHOTS = ROOT / "data" / "snapshots" / "pallets.csv"
 INVOICES = ROOT / "data" / "invoices"
+SAMPLES = ROOT / "data" / "samples"
 
 
 def build_engine(**kw) -> AuditEngine:

@@ -4,7 +4,7 @@
     python -m invoice_audit queue --flags data/flags.json
     python -m invoice_audit resolve 3f2a --note "credit received" --by sam
     python -m invoice_audit trends --flags-db data/flags.json
-    python -m invoice_audit serve  --flags-db data/flags.json
+    python -m invoice_audit serve
     python -m invoice_audit score
     python -m invoice_audit flags
 """
@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+from . import env as dotenv
 from . import flags as flagdefs
 from .checks import Tolerances
 from .credits import CsvCreditLog, NoCreditLog
@@ -85,6 +86,19 @@ def _build_parser() -> argparse.ArgumentParser:
             help="pallet-level inventory; STORAGE_AGING_ERROR needs it",
         )
         p.add_argument(
+            "--vision",
+            choices=("gemini", "anthropic"),
+            default=None,
+            metavar="PROVIDER",
+            help="model used for scans (default: gemini, or $INVOICE_AUDIT_VISION)",
+        )
+        p.add_argument(
+            "--google-api-key",
+            default=None,
+            metavar="KEY",
+            help="overrides $GOOGLE_API_KEY / $GEMINI_API_KEY",
+        )
+        p.add_argument(
             "--no-mapper",
             action="store_true",
             help="alias matching only, no fuzzy mapping (phase 1 behaviour)",
@@ -125,13 +139,21 @@ def _build_parser() -> argparse.ArgumentParser:
     trends = sub.add_parser("trends", help="flags per warehouse, per month")
     trends.add_argument("--flags-db", type=Path, required=True, metavar="FILE")
 
-    serve = sub.add_parser("serve", help="open the exception queue in a browser")
-    serve.add_argument("--flags-db", type=Path, required=True, metavar="FILE")
+    serve = sub.add_parser("serve", help="open the audit UI in a browser")
+    add_sources(serve)
+    serve.add_argument(
+        "--invoices", type=Path, default=Path("data/invoices"), metavar="DIR",
+        help="folder the UI audits and rescans",
+    )
+    serve.add_argument(
+        "--sell-cards", type=Path, default=Path("data/sell_cards"), metavar="DIR",
+    )
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument(
         "--host", default="127.0.0.1",
-        help="loopback by default; the queue has no authentication of its own",
+        help="loopback by default; writes are guarded by a token, not real auth",
     )
+    serve.add_argument("--token", default=None, help="reuse a fixed token")
     serve.add_argument("--no-browser", action="store_true")
 
     scorer = sub.add_parser("score", help="score the engine against the labelled set")
@@ -146,6 +168,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _engine(args: argparse.Namespace, **overrides) -> AuditEngine:
     store = RateCardStore.from_dir(args.rate_cards)
+
+    provider = getattr(args, "vision", None)
+    google_key = getattr(args, "google_api_key", None)
+    if provider or google_key:
+        # Rebuild the PDF/image path so the chosen provider reaches the
+        # extractors rather than only the default one.
+        from .intake import CsvExtractor, LazyVisionExtractor, PdfRouter
+
+        vision_kwargs = {"provider": provider}
+        if google_key:
+            vision_kwargs["api_key"] = google_key
+        overrides.setdefault(
+            "extractors",
+            (
+                CsvExtractor(),
+                PdfRouter(**vision_kwargs),
+                LazyVisionExtractor(**vision_kwargs),
+            ),
+        )
     order_data = (
         CsvOrderData.from_file(args.wms)
         if getattr(args, "wms", None) and args.wms.exists()
@@ -296,17 +337,40 @@ def _cmd_resolve(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    from .server import serve as run_server
+    from .server import UI_DIST, serve as run_server
+    from .workspace import Paths, Workspace
 
-    store = FlagStore(args.flags_db)
-    if not len(store):
+    if not UI_DIST.exists():
         print(
-            f"warning: {args.flags_db} has no flags yet — run `audit` with "
-            "--flags-db first",
+            "error: the UI bundle is missing. Build it once with:\n"
+            "  npm --prefix ui install && npm --prefix ui run build",
             file=sys.stderr,
         )
+        return 2
+
+    try:
+        workspace = Workspace.load(
+            Paths(
+                rate_cards=args.rate_cards,
+                sell_cards=args.sell_cards,
+                wms=args.wms,
+                credits=args.credits,
+                snapshots=args.snapshots,
+                invoices=args.invoices,
+                flags_db=args.flags_db,
+                history_db=args.history,
+            )
+        )
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
     run_server(
-        store, host=args.host, port=args.port, open_browser=not args.no_browser
+        workspace,
+        host=args.host,
+        port=args.port,
+        token=args.token,
+        open_browser=not args.no_browser,
     )
     return 0
 
@@ -369,6 +433,9 @@ def _cmd_score(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Before parsing: --vision defaults read INVOICE_AUDIT_VISION, and the
+    # backends read the API keys. A real shell variable still wins.
+    dotenv.load()
     args = _build_parser().parse_args(argv)
     return {
         "flags": lambda: _cmd_flags(),
