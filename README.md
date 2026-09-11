@@ -14,14 +14,42 @@ check, the flag store and the scorer are stdlib only. PDF and image extraction
 is the one exception:
 
 ```sh
-pip install -e ".[pdf]"      # adds pdfplumber, for born-digital PDFs
-pip install -e ".[vision]"   # adds anthropic, for scans
+pip install -e ".[pdf]"      # pdfplumber, for born-digital PDFs
+pip install -e ".[gemini]"   # google-genai, for scans (default provider)
+pip install -e ".[vision]"   # anthropic, the alternative provider
 pip install -e ".[all]"
 ```
+
+### Credentials
+
+Scans need a model; CSVs and born-digital PDFs never touch one and need no key
+at all.
+
+```sh
+cp .env.example .env     # then paste your key in
+```
+
+`.env` is gitignored; `.env.example` is the committed template and is asserted
+to hold no values. Every command loads it at startup, searching up from the
+working directory.
+
+**A real environment variable always wins over the file.** A shell export, a CI
+secret and a systemd unit are all more authoritative than a file someone left
+in a directory — silently overriding them is how a deploy ends up running on a
+developer's key.
+
+| variable | for |
+|---|---|
+| `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) | Gemini, the default provider |
+| `ANTHROPIC_API_KEY` | Claude, if you switch to it |
+| `INVOICE_AUDIT_VISION` | `gemini` or `anthropic` |
+
+Per-command overrides: `--google-api-key`, `--vision anthropic`.
 
 ## Run it
 
 ```sh
+python3 -m invoice_audit serve                               # the UI
 python3 -m invoice_audit audit data/invoices/*.csv --flags-db data/flags.json
 python3 -m invoice_audit queue --flags-db data/flags.json
 python3 -m invoice_audit queue --flags-db data/flags.json --escalated
@@ -57,12 +85,16 @@ Useful switches:
 | 01 intake | `intake.py` | routes by suffix |
 | 02 extract (csv) | `intake.py` | no — exact and free |
 | 02 extract (pdf, text layer) | `pdftext.py` | no — exact and free |
-| 02 extract (scans, images) | `vision.py` | Claude Opus 5 |
+| 02 extract (scans, images) | `vision.py` + `backends.py` | Gemini 2.5 Pro or Claude Opus 5 |
 | 03 normalize | `normalize.py` | `FuzzyMapper` by default; LLM slots into the same protocol |
 | 04 rate check, 05 qty audit, 06 emit | `checks.py` | no |
 | pipeline | `engine.py` | — |
 | queue rendering | `report.py` | — |
 | queue persistence, aging, trends | `flagstore.py` | — |
+| re-rate to the sell card | `rerate.py` | — |
+| assembled view for the UI | `workspace.py` | — |
+| HTTP API + static host | `server.py` | — |
+| React app | `ui/` → `invoice_audit/ui/dist` | — |
 | scoring against the labelled set | `scoring.py` | — |
 
 Reference data lives in `ratecards.py`, `orderdata.py` and `history.py`.
@@ -153,27 +185,107 @@ wording in the spec's taxonomy, which framed `RATE_CARD_VERSION_STALE` by invoic
 date; the period-based reading is the defensible one and the flag description has
 been updated to match.
 
-## The queue UI
+## The UI
+
+A React app (Vite) served by the Python process. Build it once, then run:
 
 ```sh
-python3 -m invoice_audit serve --flags-db data/flags.json
+npm --prefix ui install && npm --prefix ui run build
+python3 -m invoice_audit serve
 ```
 
-One page on localhost, reading and writing the same flag store the CLI uses.
-Severity stripes, an escalation filter, full provenance on every row, and
-resolve/dismiss/reopen straight from the browser.
+The CLI prints a URL carrying a write token; the app stores it in
+`sessionStorage` and sends it on mutations only. Open the app without the token
+and it works read-only and says so.
 
-`invoice_audit/ui/queue.html` is the only copy of the markup. The server seeds
-it with the live store; the same function seeds it with sample data to produce
-a read-only preview that can be shared without a machine to run it on. One
-template, two data sources.
+Five views:
 
-A resolution **requires a name and a note** — the server returns 400 without
-both. Provenance is the entire point of the queue, and a resolution with no
-reason is worse than leaving the flag open.
+| view | what it answers |
+|---|---|
+| **Check an invoice** | drop a CSV, PDF or photo and get the verdict — this is the landing view, and the entry point for anyone who never opens a terminal |
+| **Queue** | what needs a human now — severity stripes, escalation filter, full provenance per flag, resolve / dismiss / reopen |
+| **Invoices** | per invoice: what was billed, what was flagged, and the buy → sell → margin re-rate |
+| **Trends** | exposure by warehouse and month, and which faults keep recurring |
+| **Coverage** | which reference feeds are wired, what each one enables, and the full taxonomy |
 
-It binds to loopback and has no authentication. It is a review tool for a small
-team on a trusted network, not something to expose.
+### Uploading
+
+Drag a file onto the drop zone, or click to browse. The document is saved into
+the watched folder, audited immediately, and the verdict comes back inline:
+clean, flagged, or blocked, with the money at stake and the margin if it can be
+re-rated.
+
+Uploads are raw bytes with the filename in a header rather than multipart — the
+browser can POST a `File` directly, which keeps a form parser out of this
+server.
+
+Four things it refuses, and why:
+
+| refused | reason |
+|---|---|
+| anything but `.csv .pdf .png .jpg .jpeg` | nothing else is an invoice |
+| a filename already in the folder | silently overwriting a financial document is worse than saying no |
+| over 32 MB | the Claude API cannot take a larger PDF anyway |
+| a file it cannot parse | the partial file is deleted, so the folder never holds a half-invoice |
+
+Filenames are **sanitised, not escaped** — `../../../../etc/evil.csv` lands as
+`evil.csv` inside the folder. Re-uploading the same document is accepted but
+immediately flagged `DUPLICATE_INVOICE`, so the same invoice cannot be paid
+twice.
+
+**Coverage exists because a missing feed is silently indistinguishable from a
+clean month.** Without the WMS export there is no `QTY_VARIANCE`; without the
+dispute log there is no `MISSING_CREDIT`. The view names every feed that is off
+and the checks it disables, and documents that could not be read at all are
+listed separately — a read failure is not a clean invoice.
+
+A resolution **requires a name and a note**, refused client-side and again with
+a 400 server-side. Provenance is the entire point of the queue.
+
+For development, `npm --prefix ui run dev` proxies `/api` to port 8765.
+
+### What it is not
+
+It binds to loopback and guards writes with a shared token — enough to stop a
+stray script or another user on a shared machine, not real identity. Anything
+beyond one trusted network needs proper auth.
+
+## Re-rating to the sell card
+
+`rerate.py` is the first piece of phase 4, and the part no off-the-shelf 3PL
+audit tool does — they all assume you are the end customer rather than the
+middleman.
+
+Two rules govern it:
+
+**A line we could not price cannot be marked up.** An `UNKNOWN` line has no buy
+rate, so it has no defensible sell rate. The invoice is blocked from going out.
+
+**Re-rating uses our quantities, not the warehouse's.** Where the audit found a
+`QTY_VARIANCE`, the client is billed what our order data says happened. Billing
+a client for 3,200 orders because a warehouse typed it is how an inbound error
+becomes an outbound one.
+
+Margin is per line from the card, never a flat markup — the sample month runs
+50%, 38.9%, 50%, 50%, 10% and 35.7% across six lines, and a test asserts the
+spread stays varied so nobody quietly replaces the card with a multiplier.
+
+## Swapping the vision provider
+
+`vision.py` owns everything that decides whether an extraction is *valid* — the
+prompt, the schema, the validation, the retry ladder. `backends.py` owns only
+the call itself. A backend turns (bytes, instruction) into a JSON string and
+nothing more, so changing provider cannot quietly change what counts as a
+well-formed invoice. A test asserts both backends receive the identical prompt
+and schema.
+
+One real incompatibility is handled in `to_gemini_schema`: we write nullable
+fields as `{"type": ["string", "null"]}`, Gemini wants
+`{"type": "string", "nullable": true}`. Left untranslated the whole request is
+rejected, so it is not cosmetic — and the translation is a copy, because the
+Anthropic backend still needs the original.
+
+Gemini runs at `temperature=0`. This is transcription, not composition.
 
 ## Extraction: text layer first, vision second
 

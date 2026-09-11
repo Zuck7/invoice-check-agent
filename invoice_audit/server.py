@@ -1,78 +1,50 @@
-"""The exception queue as a local web app.
+"""HTTP API and static host for the exception queue UI.
 
-`queue`/`resolve` on the CLI are fine for one reviewer. This is the same store
-behind a page three people can work at once, which is what phase 3 actually
-asked for.
-
-Deliberately stdlib ``http.server``: it binds to localhost, holds the flag
-store in one process, and needs no framework to serve one page and one
-endpoint. It is a review tool for a small team, not a public service -- so it
-refuses to bind to anything but the loopback interface unless told otherwise,
-and it has no authentication of its own.
+Stdlib ``http.server``: one process, one workspace, a handful of JSON routes
+and a built React bundle. It is a review tool for a small team, not a public
+service, so it binds to loopback by default and guards writes with a shared
+token rather than pretending to have real identity.
 """
 
 from __future__ import annotations
 
 import json
+import mimetypes
+import secrets
 import webbrowser
 from datetime import datetime, timezone
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
-from .flagstore import ESCALATION_DAYS, FlagRecord, FlagStore, Status
+from .flagstore import ESCALATION_DAYS, FlagRecord
+from .workspace import MAX_UPLOAD_BYTES, Paths, UploadRejected, Workspace
 
-TEMPLATE = Path(__file__).parent / "ui" / "queue.html"
+UI_DIST = Path(__file__).parent / "ui" / "dist"
 MAX_BODY = 64 * 1024
 
 
 def record_json(record: FlagRecord, now: datetime | None = None) -> dict[str, Any]:
-    """One queue row, shaped for the page."""
     payload = record.to_dict()
     payload["age_days"] = record.age_days(now)
     payload["escalated"] = record.escalated(now)
     return payload
 
 
-def page(store: FlagStore, live: bool = True) -> str:
-    """Render the template with the store's data baked in.
-
-    One template, two data sources: the live server injects the real store, and
-    ``build_preview`` injects a sample so the page can be shared without a
-    machine to run it on.
-    """
-    now = datetime.now(timezone.utc)
-    data = {
-        "flags": [record_json(r, now) for r in store.all()],
-        "meta": {
-            "live": live,
-            "path": str(store.path) if store.path else "in memory",
-            "escalation_days": ESCALATION_DAYS,
-            "generated_at": now.isoformat(),
-        },
-    }
-    html = TEMPLATE.read_text(encoding="utf-8")
-    seed = (
-        "<script>window.__QUEUE__ = "
-        + json.dumps(data).replace("</", "<\\/")
-        + ";</script>\n"
-    )
-    # Ahead of the page script, which reads window.__QUEUE__ on load.
-    return seed + html
-
-
-class QueueHandler(BaseHTTPRequestHandler):
+class ApiHandler(BaseHTTPRequestHandler):
     server_version = "invoice-audit"
 
-    def __init__(self, *args: Any, store: FlagStore, **kw: Any) -> None:
-        self.store = store
+    def __init__(self, *args: Any, workspace: Workspace, token: str, **kw: Any) -> None:
+        self.workspace = workspace
+        self.token = token
         super().__init__(*args, **kw)
 
     # -- plumbing ----------------------------------------------------------
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        pass  # the audit log that matters is the flag store, not access logs
+        pass  # the audit trail that matters is the flag store
 
     def _send(self, code: int, body: bytes, content_type: str) -> None:
         self.send_response(code)
@@ -89,38 +61,166 @@ class QueueHandler(BaseHTTPRequestHandler):
     def _error(self, code: int, message: str) -> None:
         self._json(code, {"error": message})
 
+    def _authorised(self) -> bool:
+        """Reads are open on loopback; writes need the token.
+
+        Deliberately modest: it stops a stray script or another user on a shared
+        machine from resolving flags, and it is not a substitute for real auth
+        if this ever leaves a trusted network.
+        """
+        header = self.headers.get("Authorization", "")
+        supplied = header[7:] if header.startswith("Bearer ") else ""
+        return secrets.compare_digest(supplied, self.token)
+
     # -- routes ------------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path in ("/", "/index.html"):
-            self._send(200, page(self.store).encode("utf-8"), "text/html; charset=utf-8")
-        elif self.path == "/api/flags":
-            now = datetime.now(timezone.utc)
-            self._json(200, [record_json(r, now) for r in self.store.all()])
-        else:
-            self._error(404, "no such page")
+        path = urlparse(self.path).path
+        ws = self.workspace
+        now = datetime.now(timezone.utc)
 
-    def do_POST(self) -> None:  # noqa: N802
-        if not self.path.startswith("/api/flags/"):
-            self._error(404, "no such endpoint")
+        routes = {
+            "/api/summary": lambda: ws.summary(),
+            "/api/flags": lambda: [record_json(r, now) for r in ws.flag_store.all()],
+            "/api/invoices": lambda: ws.invoices(),
+            "/api/trends": lambda: {
+                "months": ws.trends(),
+                "repeats": ws.repeats(),
+            },
+            "/api/taxonomy": self._taxonomy,
+            "/api/failures": lambda: ws.failures,
+        }
+        if path in routes:
+            self._json(200, routes[path]())
             return
 
-        fingerprint = self.path.rsplit("/", 1)[-1]
+        self._static(path)
+
+    def _taxonomy(self) -> list[dict[str, Any]]:
+        from .flags import FLAGS
+
+        return [
+            {
+                "id": f.id,
+                "severity": f.severity.value,
+                "description": f.description,
+                "detection": f.detection.value,
+                "inputs": f.inputs,
+                "phase": f.phase,
+            }
+            for f in FLAGS.values()
+        ]
+
+    def _static(self, path: str) -> None:
+        if not UI_DIST.exists():
+            self._send(
+                503,
+                b"UI not built. Run: npm --prefix ui install && npm --prefix ui run build",
+                "text/plain; charset=utf-8",
+            )
+            return
+
+        # Decode first: without this, "..%2f.." never becomes a separator and
+        # the guard below is bypassed into the SPA fallback rather than a 403.
+        rel = unquote(path).lstrip("/") or "index.html"
+        target = (UI_DIST / rel).resolve()
+        try:
+            target.relative_to(UI_DIST.resolve())
+        except ValueError:
+            self._error(403, "outside the bundle")
+            return
+        if not target.is_file():
+            target = UI_DIST / "index.html"  # SPA fallback
+        if not target.is_file():
+            self._error(404, "not found")
+            return
+
+        ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        if ctype.startswith("text/") or ctype == "application/javascript":
+            ctype += "; charset=utf-8"
+        self._send(200, target.read_bytes(), ctype)
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        if not self._authorised():
+            self._error(401, "a valid token is required to change anything")
+            return
+
+        if path == "/api/upload":
+            self._upload()
+            return
+
         length = int(self.headers.get("Content-Length") or 0)
         if length > MAX_BODY:
             self._error(413, "body too large")
             return
-
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
         except json.JSONDecodeError:
             self._error(400, "body was not JSON")
             return
 
+        if path == "/api/rescan":
+            self.workspace.rescan()
+            self._json(200, self.workspace.summary())
+            return
+
+        if path.startswith("/api/flags/"):
+            self._resolve(path.rsplit("/", 1)[-1], body)
+            return
+
+        self._error(404, "no such endpoint")
+
+    def _upload(self) -> None:
+        """Raw file bytes with the name in a header.
+
+        Not multipart: the browser can POST a File object directly, which skips
+        a parser this server has no business containing and keeps the upload a
+        single stream rather than a buffered form.
+        """
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            self._error(400, "no file was sent")
+            return
+        if length > MAX_UPLOAD_BYTES:
+            self._error(
+                413,
+                f"that file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB",
+            )
+            return
+
+        filename = unquote(self.headers.get("X-Filename", "")).strip()
+        if not filename:
+            self._error(400, "the upload is missing its filename")
+            return
+
+        # Read exactly Content-Length; a short read means the browser gave up
+        # mid-upload and the bytes on disk would be a truncated invoice.
+        data = bytearray()
+        while len(data) < length:
+            chunk = self.rfile.read(min(65536, length - len(data)))
+            if not chunk:
+                self._error(400, "the upload ended early — try again")
+                return
+            data.extend(chunk)
+
+        try:
+            payload = self.workspace.ingest(filename, bytes(data))
+        except UploadRejected as exc:
+            self._error(422, str(exc))
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            self._error(500, f"the audit failed: {exc}")
+            return
+
+        self._json(201, payload)
+
+    def _resolve(self, fingerprint: str, body: dict[str, Any]) -> None:
+        store = self.workspace.flag_store
         action = body.get("action")
         try:
             if action == "reopen":
-                record = self.store.reopen(fingerprint)
+                record = store.reopen(fingerprint)
             elif action in ("resolve", "dismiss"):
                 who = (body.get("by") or "").strip()
                 note = (body.get("note") or "").strip()
@@ -129,7 +229,7 @@ class QueueHandler(BaseHTTPRequestHandler):
                     # no name and no reason is worse than leaving it open.
                     self._error(400, "both a name and a note are required")
                     return
-                record = self.store.resolve(
+                record = store.resolve(
                     fingerprint, resolution=note, by=who,
                     dismissed=(action == "dismiss"),
                 )
@@ -140,17 +240,19 @@ class QueueHandler(BaseHTTPRequestHandler):
             self._error(404, str(exc))
             return
 
-        self.store.flush()
+        store.flush()
         self._json(200, record_json(record))
 
 
 def serve(
-    store: FlagStore,
+    workspace: Workspace,
     host: str = "127.0.0.1",
     port: int = 8765,
+    token: str | None = None,
     open_browser: bool = True,
 ) -> None:
-    handler = partial(QueueHandler, store=store)
+    token = token or secrets.token_urlsafe(16)
+    handler = partial(ApiHandler, workspace=workspace, token=token)
     try:
         httpd = ThreadingHTTPServer((host, port), handler)
     except OSError as exc:
@@ -160,10 +262,15 @@ def serve(
                 f"running. Stop it, or pass --port {port + 1}."
             ) from exc
         raise
-    url = f"http://{host}:{port}/"
-    print(f"Exception queue on {url}")
-    print(f"  store   {store.path or 'in memory'}")
-    print(f"  flags   {len(store)} ({len(store.open_records())} open)")
+
+    url = f"http://{host}:{port}/?token={token}"
+    summary = workspace.summary()
+    print(f"Invoice audit UI on http://{host}:{port}/")
+    print(f"  invoices  {summary['invoices']} ({summary['flagged']} flagged)")
+    print(f"  flags     {summary['open_flags']} open, {summary['escalated']} escalated")
+    print(f"  token     {token}")
+    if not UI_DIST.exists():
+        print("  ! UI bundle missing — run: npm --prefix ui install && npm --prefix ui run build")
     print("  ctrl-c to stop")
     if open_browser:
         webbrowser.open(url)
@@ -173,4 +280,4 @@ def serve(
         print("\nstopped")
     finally:
         httpd.server_close()
-        store.flush()
+        workspace.flag_store.flush()

@@ -29,7 +29,9 @@ from .orderdata import CsvOrderData, NoOrderData, PeriodKey
 from .ratecards import RateCardStore
 from .snapshots import CsvSnapshots, NoSnapshots
 from .report import render, render_batch, to_json
+from .rerate import Rerate, SellCardStore, rerate
 from .scoring import LabelledCase, Scorecard, load_cases, score
+from .workspace import Paths, Workspace
 
 __all__ = [
     "AuditEngine",
@@ -57,11 +59,16 @@ __all__ = [
     "PeriodKey",
     "RateCard",
     "RateCardStore",
+    "Paths",
+    "Rerate",
     "Scorecard",
+    "SellCardStore",
     "Severity",
     "Status",
     "Suggestion",
+    "Workspace",
     "load_cases",
+    "rerate",
     "score",
     "Tolerances",
     "read_invoice",
@@ -70,4 +77,4 @@ __all__ = [
     "to_json",
 ]
 
-__version__ = "1.4.0"
+__version__ = "1.6.0"

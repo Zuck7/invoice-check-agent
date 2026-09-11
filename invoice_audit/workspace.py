@@ -8,6 +8,7 @@ from and re-scan on demand.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -28,6 +29,29 @@ from .rerate import Rerate, SellCardStore, rerate
 from .snapshots import CsvSnapshots, NoSnapshots
 
 INVOICE_SUFFIXES = (".csv", ".pdf", ".png", ".jpg", ".jpeg")
+
+#: Upload ceiling. The Claude API caps a PDF request at 32 MB, so anything
+#: larger could not be transcribed even if we accepted it.
+MAX_UPLOAD_BYTES = 32 * 1024 * 1024
+
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+class UploadRejected(ValueError):
+    """The file will not be accepted. Never a flag — the audit never ran."""
+
+
+def safe_filename(raw: str) -> str:
+    """Reduce a browser-supplied name to something that cannot escape a folder.
+
+    Path separators, traversal and control characters are removed rather than
+    escaped, because no legitimate invoice filename needs them.
+    """
+    name = Path(str(raw or "")).name.strip()
+    name = _SAFE_NAME.sub("_", name).strip("._")
+    if not name:
+        raise UploadRejected("that file has no usable name")
+    return name
 
 
 @dataclass
@@ -131,6 +155,64 @@ class Workspace:
         self.engine.flag_store.flush()
         self.engine.history.flush()
         self.scanned_at = datetime.now(timezone.utc)
+
+    # -- upload ------------------------------------------------------------
+
+    def ingest(self, filename: str, data: bytes) -> dict[str, Any]:
+        """Accept one uploaded document, audit it, and return the verdict.
+
+        Deliberately not a rescan: the new invoice is audited against the
+        history already in the store, so re-uploading the same document is
+        caught as DUPLICATE_INVOICE rather than quietly passing twice.
+        """
+        assert self.engine is not None
+
+        if not data:
+            raise UploadRejected("that file is empty")
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise UploadRejected(
+                f"that file is {len(data) // (1024 * 1024)} MB; the limit is "
+                f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB"
+            )
+
+        name = safe_filename(filename)
+        suffix = Path(name).suffix.lower()
+        if suffix not in INVOICE_SUFFIXES:
+            raise UploadRejected(
+                f"{suffix or 'that file type'} is not an invoice format — "
+                f"send {', '.join(INVOICE_SUFFIXES)}"
+            )
+
+        self.paths.invoices.mkdir(parents=True, exist_ok=True)
+        target = self.paths.invoices / name
+        if target.exists():
+            # Overwriting a financial document silently is worse than refusing.
+            raise UploadRejected(
+                f"{name} is already here. Rename it if this is a different "
+                "invoice, or delete the old one if it is a correction."
+            )
+
+        target.write_bytes(data)
+        try:
+            result = self.engine.audit_path(target)
+        except IntakeError as exc:
+            target.unlink(missing_ok=True)
+            raise UploadRejected(str(exc)) from exc
+
+        self.results.append(result)
+        if self.sell_cards is not None:
+            self.rerates[result.invoice.invoice_no] = rerate(result, self.sell_cards)
+
+        self.engine.flag_store.flush()
+        self.engine.history.flush()
+        self.scanned_at = datetime.now(timezone.utc)
+
+        payload = result.to_dict()
+        payload["route"] = suffix.lstrip(".")
+        payload["filename"] = name
+        rr = self.rerates.get(result.invoice.invoice_no)
+        payload["rerate"] = rr.to_dict() if rr else None
+        return payload
 
     # -- views -------------------------------------------------------------
 

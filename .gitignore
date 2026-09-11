@@ -4,3 +4,10 @@ __pycache__/
 *.egg-info/
 data/flags.json
 data/history.json
+ui/node_modules/
+invoice_audit/ui/dist/
+
+# Never commit credentials. .env.example is the committed template.
+.env
+.env.*
+!.env.example

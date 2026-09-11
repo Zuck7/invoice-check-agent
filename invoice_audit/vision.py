@@ -17,13 +17,13 @@ buy card and the WMS, so a misread becomes a flag rather than a silent error:
 
 The checks that catch a warehouse's mistakes catch the extractor's too.
 
-Requires the ``anthropic`` package. The rest of the project has no third-party
-dependencies and still runs without it; only this module needs it.
+The provider is pluggable — see ``backends.py``. Everything that decides
+whether an extraction is *valid* lives here and is shared, so switching between
+Gemini and Claude cannot change what counts as a well-formed invoice.
 """
 
 from __future__ import annotations
 
-import base64
 import json
 from dataclasses import dataclass, field
 from datetime import date
@@ -31,11 +31,10 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from .backends import BackendError, VisionBackend, make_backend
 from .intake import IntakeError
 from .models import Invoice, InvoiceLine
 from .money import money, quantity
-
-MODEL = "claude-opus-5"
 
 #: Extraction retries. One focused re-read after a bad first pass, then give up
 #: and let a human look at it. Same ceiling as the mapping ladder.
@@ -161,6 +160,9 @@ def _date(value: object, what: str) -> date:
 class VisionExtractor:
     """Transcribes PDFs and images via the Claude API.
 
+    ``provider`` picks the backend ("gemini" or "anthropic"); leaving it unset
+    uses ``INVOICE_AUDIT_VISION`` and otherwise Gemini.
+
     ``warehouse_id`` and ``client_id`` override whatever the model reads off the
     page. Intake usually knows them from routing (which mailbox the invoice
     arrived in), and an internal id is not something a warehouse prints. When
@@ -168,8 +170,10 @@ class VisionExtractor:
     surfaces that as RATE_CARD_VERSION_STALE rather than guessing.
     """
 
-    client: Any = None
-    model: str = MODEL
+    backend: VisionBackend | None = None
+    provider: str | None = None
+    api_key: str | None = None
+    model: str | None = None
     warehouse_id: str | None = None
     client_id: str | None = None
     max_retries: int = MAX_EXTRACT_RETRIES
@@ -177,15 +181,13 @@ class VisionExtractor:
     _usage: list[Any] = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
-        if self.client is None:
-            try:
-                import anthropic
-            except ImportError as exc:  # pragma: no cover - environment issue
-                raise ExtractionError(
-                    "PDF and image extraction needs the 'anthropic' package: "
-                    "pip install anthropic"
-                ) from exc
-            self.client = anthropic.Anthropic()
+        if self.backend is None:
+            kwargs: dict[str, Any] = {}
+            if self.api_key:
+                kwargs["api_key"] = self.api_key
+            if self.model:
+                kwargs["model"] = self.model
+            self.backend = make_backend(self.provider, **kwargs)
 
     # -- Extractor protocol ------------------------------------------------
 
@@ -198,27 +200,7 @@ class VisionExtractor:
         if media_type is None:
             raise ExtractionError(f"{path.name}: unsupported format")
 
-        payload = base64.standard_b64encode(path.read_bytes()).decode("ascii")
-        block = (
-            {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": payload,
-                },
-            }
-            if media_type == "application/pdf"
-            else {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": payload,
-                },
-            }
-        )
-
+        data = path.read_bytes()
         instruction = "Transcribe this warehouse invoice."
         last_error: str | None = None
 
@@ -230,7 +212,7 @@ class VisionExtractor:
                     "Re-read the affected values character by character. "
                     "Remember: copy what is printed, do not compute or correct."
                 )
-            raw = self._ask(block, instruction)
+            raw = self._ask(data, media_type, instruction)
             try:
                 return self._build(raw, path)
             except ExtractionError as exc:
@@ -243,45 +225,19 @@ class VisionExtractor:
 
     # -- API ---------------------------------------------------------------
 
-    def _ask(self, block: dict[str, Any], instruction: str) -> dict[str, Any]:
+    def _ask(self, data: bytes, media_type: str, instruction: str) -> dict[str, Any]:
+        assert self.backend is not None
         try:
-            with self.client.beta.messages.stream(
-                model=self.model,
-                max_tokens=64000,
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-                thinking={"type": "adaptive"},
+            text = self.backend.transcribe(
+                data=data,
+                media_type=media_type,
+                instruction=instruction,
                 system=SYSTEM,
-                output_config={
-                    "format": {"type": "json_schema", "schema": INVOICE_SCHEMA}
-                },
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [block, {"type": "text", "text": instruction}],
-                    }
-                ],
-            ) as stream:
-                response = stream.get_final_message()
-        except Exception as exc:  # surfaced to the caller as a read failure
-            raise ExtractionError(f"extraction request failed: {exc}") from exc
-
-        self._usage.append(getattr(response, "usage", None))
-
-        if getattr(response, "stop_reason", None) == "refusal":
-            details = getattr(response, "stop_details", None)
-            category = getattr(details, "category", None)
-            raise ExtractionError(
-                f"the model declined to transcribe this document ({category}). "
-                "Route it to a human."
+                schema=INVOICE_SCHEMA,
             )
+        except BackendError as exc:
+            raise ExtractionError(str(exc)) from exc
 
-        text = next(
-            (b.text for b in response.content if getattr(b, "type", None) == "text"),
-            None,
-        )
-        if not text:
-            raise ExtractionError("no content returned")
         try:
             return json.loads(text)
         except json.JSONDecodeError as exc:

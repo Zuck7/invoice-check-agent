@@ -1,6 +1,6 @@
 [project]
 name = "invoice-audit"
-version = "1.4.0"
+version = "1.6.0"
 description = "Audits inbound warehouse invoices against the buy rate card and order data."
 requires-python = ">=3.11"
 
@@ -12,13 +12,17 @@ dependencies = []
 [project.optional-dependencies]
 # The text-layer fast path for born-digital PDFs.
 pdf = ["pdfplumber>=0.11"]
-# Scans and images. A CSV-only deployment installs neither, and the test suite
-# imports neither — it fakes the client and skips the pdf tests.
+# Scans and images. Pick a provider; the extraction contract is identical.
+gemini = ["google-genai>=1.0"]
 vision = ["anthropic>=1.0"]
-all = ["pdfplumber>=0.11", "anthropic>=1.0"]
+all = ["pdfplumber>=0.11", "google-genai>=1.0", "anthropic>=1.0"]
 
 [project.scripts]
 invoice-audit = "invoice_audit.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["invoice_audit*"]
+
+[tool.setuptools.package-data]
+# The built React bundle ships with the package so `serve` needs no web server.
+invoice_audit = ["ui/dist/**/*"]

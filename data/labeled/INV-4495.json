@@ -1,5 +1,5 @@
 {
-  "invoice": "data/invoices/INV-4495.csv",
+  "invoice": "data/samples/INV-4495.csv",
   "note": "correct invoice, every line reworded - a precision trap for the mapper",
   "expected": []
 }
