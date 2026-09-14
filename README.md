@@ -9,7 +9,7 @@ and the company's own warehouse data, and produces a queue of typed, costed
 findings a human can act on — then re-rates the corrected invoice onto the
 client's sell card to show the real margin.
 
-> **Live demo:** _(add your deployed URL here)_
+> **Live demo:** [invoice-audit-demo.onrender.com](https://invoice-audit-demo.onrender.com)
 > Upload [`examples/DEMO-INV-5007.csv`](examples/DEMO-INV-5007.csv) — it returns
 > 7 findings worth $2,003 and blocks the invoice from being re-billed.
 
